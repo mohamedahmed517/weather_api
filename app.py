@@ -6,15 +6,17 @@ import numpy as np
 import pandas as pd
 from datetime import date, timedelta
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential # type: ignore
-from tensorflow.keras.layers import LSTM, Dense, Input # type: ignore
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Input
 
 app = Flask(__name__)
 
+# ====================== إعدادات ======================
 WINDOW_SIZE = 10
-EPOCHS = 15
+EPOCHS = 15        
 BATCH_SIZE = 16
 
+# ====================== كشف الـ IP الحقيقي ======================
 IPV4_PRIVATE = re.compile(r'^(127\.0\.0\.1|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)')
 
 def is_private_ip(ip: str) -> bool:
@@ -57,6 +59,7 @@ def get_user_ip() -> str:
 
     return "127.0.0.1"
 
+# ====================== وظائف مساعدة ======================
 def suggest_outfit(temp, rain):
     if rain > 2.0:
         return "الجو ممطر - خُد شمسية وجاكيت خفيف"
@@ -93,8 +96,16 @@ def fetch_weather(lat, lon, tz, start, end):
     r.raise_for_status()
     return r.json()
 
+# ====================== دالة التنبؤ (محدثة + حماية من tuple index out of range) ======================
 def lstm_predict(data, days_ahead):
+    # تحقق من وجود بيانات
+    if "daily" not in data or "time" not in data["daily"]:
+        raise ValueError("البيانات من open-meteo غير كاملة")
+
     df = pd.DataFrame(data["daily"])
+    if len(df) < WINDOW_SIZE:
+        raise ValueError(f"البيانات قليلة جدًا: {len(df)} يوم فقط (يحتاج {WINDOW_SIZE} على الأقل)")
+
     df["temp_mean"] = (df["temperature_2m_max"] + df["temperature_2m_min"]) / 2
     df = df[["time", "temp_mean", "precipitation_sum", "windspeed_10m_max"]]
 
@@ -102,11 +113,18 @@ def lstm_predict(data, days_ahead):
     scaler = MinMaxScaler()
     features_scaled = scaler.fit_transform(features)
 
+    # تحقق من وجود بيانات كافية للتدريب
+    if len(features_scaled) <= WINDOW_SIZE:
+        raise ValueError(f"البيانات غير كافية للتدريب: {len(features_scaled)} يوم")
+
     X, y = [], []
     for i in range(len(features_scaled) - WINDOW_SIZE):
         X.append(features_scaled[i:i + WINDOW_SIZE])
         y.append(features_scaled[i + WINDOW_SIZE, 0])
     X, y = np.array(X), np.array(y)
+
+    if len(X) == 0:
+        raise ValueError("لا توجد بيانات كافية لتدريب النموذج")
 
     model = Sequential([
         Input(shape=(WINDOW_SIZE, X.shape[2])),
@@ -115,13 +133,13 @@ def lstm_predict(data, days_ahead):
         Dense(1)
     ])
     model.compile(optimizer='adam', loss='mse')
-    model.fit(X, y, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=0)
+    model.fit(X, y, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=0)  # ← 15 epochs
 
     last_seq = features_scaled[-WINDOW_SIZE:].copy()
     predictions = []
 
     for _ in range(days_ahead):
-        input_seq = np.expand_dims(last_seq, axis=0)
+        input_seq = np.expand_dims(last_seq, axis=0)  # (1, 10, 3)
         pred_scaled = model.predict(input_seq, verbose=0)[0, 0]
 
         inv = np.zeros((1, features.shape[1]))
@@ -135,6 +153,7 @@ def lstm_predict(data, days_ahead):
     rain = df.iloc[-1]["precipitation_sum"]
     return predictions, rain
 
+# ====================== الـ Routes ======================
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
@@ -149,8 +168,8 @@ def weather():
     try:
         user_ip = get_user_ip()
         days = int(request.json.get("days", 7))
-        if days < 1 or days > 15:
-            return jsonify({"error": "عدد الأيام من 1 إلى 15"}), 400
+        if days < 1 or days > 16:
+            return jsonify({"error": "عدد الأيام من 1 إلى 16"}), 400
 
         loc = get_location(user_ip)
         if not loc:
@@ -158,7 +177,14 @@ def weather():
 
         start = date.today()
         end = start + timedelta(days=days)
-        weather_data = fetch_weather(loc["lat"], loc["lon"], loc["timezone"], start.isoformat(), end.isoformat())
+        weather_data = fetch_weather(loc["lat"], loc["lon"], loc["timezone"],
+                                     start.isoformat(), end.isoformat())
+
+        # تحقق من البيانات قبل التنبؤ
+        if "daily" not in weather_data or len(weather_data["daily"]["time"]) < WINDOW_SIZE:
+            return jsonify({
+                "error": f"البيانات غير كافية من open-meteo (حصلت على {len(weather_data['daily']['time']) if 'daily' in weather_data else 0} يوم فقط)"
+            }), 400
 
         temps, rain = lstm_predict(weather_data, days)
 
@@ -174,9 +200,12 @@ def weather():
             "results": results
         })
 
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"خطأ داخلي: {str(e)}"}), 500
 
+# ====================== تشغيل السيرفر ======================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
