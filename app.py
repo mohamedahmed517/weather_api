@@ -107,14 +107,22 @@ def lstm_predict(data, days):
         y.append(scaled[i + WINDOW_SIZE, 0])
     X, y = np.array(X), np.array(y)
 
-    model = Sequential([Input(shape=(WINDOW_SIZE, 3)), LSTM(64, return_sequences=True), LSTM(32), Dense(1)])
+    model = Sequential([
+        Input(shape=(WINDOW_SIZE, 3)),
+        LSTM(64, return_sequences=True),
+        LSTM(32),
+        Dense(1)
+    ])
     model.compile(optimizer='adam', loss='mse')
     model.fit(X, y, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=0)
 
     seq = scaled[-WINDOW_SIZE:].copy()
     preds = []
+
     for _ in range(days):
-        p = model.predict(np.expand_dims(seq, 0), verbose=0)[0, 0]
+        input_seq = np.expand_dims(seq, axis=0) 
+        p = model.predict(input_seq, verbose=0)[0, 0]
+
         inv = np.zeros((1, 3))
         inv[0, 0] = p
         temp = scaler.inverse_transform(inv)[0, 0]
@@ -122,6 +130,7 @@ def lstm_predict(data, days):
 
         new_row = np.array([[p, seq[-1, 1], seq[-1, 2]]])
         seq = np.vstack((seq[1:], new_row))
+
     return preds
 
 @app.route("/api/weather", methods=["POST"])
@@ -160,4 +169,5 @@ def weather():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+
     app.run(host="0.0.0.0", port=port, debug=False)
