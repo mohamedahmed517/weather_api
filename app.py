@@ -13,10 +13,10 @@ app = Flask(__name__)
 
 # ====================== إعدادات ======================
 WINDOW_SIZE = 10
-EPOCHS = 15        
+EPOCHS = 15          # زي ما طلبت
 BATCH_SIZE = 16
 
-# ====================== كشف الـ IP الحقيقي ======================
+# ====================== كشف الـ IP ======================
 IPV4_PRIVATE = re.compile(r'^(127\.0\.0\.1|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)')
 
 def is_private_ip(ip: str) -> bool:
@@ -26,25 +26,20 @@ def get_user_ip() -> str:
     cf_ip = request.headers.get("CF-Connecting-IP")
     if cf_ip and not is_private_ip(cf_ip):
         return cf_ip
-
     true_ip = request.headers.get("True-Client-IP")
     if true_ip and not is_private_ip(true_ip):
         return true_ip
-
     real_ip = request.headers.get("X-Real-IP")
-    if real_ip and not is_private_ip(real_ip):
+    if real iron_ip and not is_private_ip(real_ip):
         return real_ip
-
     fwd = request.headers.get("X-Forwarded-For")
     if fwd:
         for ip in [i.strip() for i in fwd.split(",")]:
             if ip and not is_private_ip(ip):
                 return ip
-
     client_ip = request.headers.get("X-Client-IP")
     if client_ip and not is_private_ip(client_ip):
         return client_ip
-
     forwarded = request.headers.get("Forwarded")
     if forwarded:
         for part in forwarded.split(";"):
@@ -52,11 +47,9 @@ def get_user_ip() -> str:
                 ip = part.split("=", 1)[1].strip().strip('"[]')
                 if ip and not is_private_ip(ip):
                     return ip
-
     remote = request.remote_addr
     if remote and not is_private_ip(remote):
         return remote
-
     return "127.0.0.1"
 
 # ====================== وظائف مساعدة ======================
@@ -96,9 +89,8 @@ def fetch_weather(lat, lon, tz, start, end):
     r.raise_for_status()
     return r.json()
 
-# ====================== دالة التنبؤ (محدثة + حماية من tuple index out of range) ======================
+# ====================== دالة التنبؤ ======================
 def lstm_predict(data, days_ahead):
-    # تحقق من وجود بيانات
     if "daily" not in data or "time" not in data["daily"]:
         raise ValueError("البيانات من open-meteo غير كاملة")
 
@@ -113,7 +105,6 @@ def lstm_predict(data, days_ahead):
     scaler = MinMaxScaler()
     features_scaled = scaler.fit_transform(features)
 
-    # تحقق من وجود بيانات كافية للتدريب
     if len(features_scaled) <= WINDOW_SIZE:
         raise ValueError(f"البيانات غير كافية للتدريب: {len(features_scaled)} يوم")
 
@@ -133,13 +124,13 @@ def lstm_predict(data, days_ahead):
         Dense(1)
     ])
     model.compile(optimizer='adam', loss='mse')
-    model.fit(X, y, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=0)  # ← 15 epochs
+    model.fit(X, y, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=0)
 
     last_seq = features_scaled[-WINDOW_SIZE:].copy()
     predictions = []
 
     for _ in range(days_ahead):
-        input_seq = np.expand_dims(last_seq, axis=0)  # (1, 10, 3)
+        input_seq = np.expand_dims(last_seq, axis=0)
         pred_scaled = model.predict(input_seq, verbose=0)[0, 0]
 
         inv = np.zeros((1, features.shape[1]))
@@ -171,19 +162,21 @@ def weather():
         if days < 1 or days > 16:
             return jsonify({"error": "عدد الأيام من 1 إلى 16"}), 400
 
+        # === الحل: اطلب دايمًا 10 أيام على الأقل ===
+        fetch_days = max(days, 10)
+
         loc = get_location(user_ip)
         if not loc:
             return jsonify({"error": "فشل تحديد الموقع"}), 400
 
         start = date.today()
-        end = start + timedelta(days=days)
+        end = start + timedelta(days=fetch_days)
         weather_data = fetch_weather(loc["lat"], loc["lon"], loc["timezone"],
                                      start.isoformat(), end.isoformat())
 
-        # تحقق من البيانات قبل التنبؤ
         if "daily" not in weather_data or len(weather_data["daily"]["time"]) < WINDOW_SIZE:
             return jsonify({
-                "error": f"البيانات غير كافية من open-meteo (حصلت على {len(weather_data['daily']['time']) if 'daily' in weather_data else 0} يوم فقط)"
+                "error": f"البيانات غير كافية من open-meteo (حصلت على {len(weather_data['daily']['time'])} يوم فقط)"
             }), 400
 
         temps, rain = lstm_predict(weather_data, days)
