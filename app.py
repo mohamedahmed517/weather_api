@@ -1,10 +1,10 @@
 import os
 import re
+from flask import Flask, request, jsonify
 import requests
 import numpy as np
 import pandas as pd
 from datetime import date, timedelta
-from flask import Flask, request, jsonify
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential # type: ignore
 from tensorflow.keras.layers import LSTM, Dense, Input # type: ignore
@@ -93,22 +93,23 @@ def fetch_weather(lat, lon, tz, start, end):
     r.raise_for_status()
     return r.json()
 
-def lstm_predict(data, days):
+def lstm_predict(data, days_ahead):
     df = pd.DataFrame(data["daily"])
     df["temp_mean"] = (df["temperature_2m_max"] + df["temperature_2m_min"]) / 2
-    df = df[["temp_mean", "precipitation_sum", "windspeed_10m_max"]]
+    df = df[["time", "temp_mean", "precipitation_sum", "windspeed_10m_max"]]
 
+    features = df[["temp_mean", "precipitation_sum", "windspeed_10m_max"]].values
     scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(df.values)
+    features_scaled = scaler.fit_transform(features)
 
     X, y = [], []
-    for i in range(len(scaled) - WINDOW_SIZE):
-        X.append(scaled[i:i + WINDOW_SIZE])
-        y.append(scaled[i + WINDOW_SIZE, 0])
+    for i in range(len(features_scaled) - WINDOW_SIZE):
+        X.append(features_scaled[i:i + WINDOW_SIZE])
+        y.append(features_scaled[i + WINDOW_SIZE, 0])
     X, y = np.array(X), np.array(y)
 
     model = Sequential([
-        Input(shape=(WINDOW_SIZE, 3)),
+        Input(shape=(WINDOW_SIZE, X.shape[2])),
         LSTM(64, return_sequences=True),
         LSTM(32),
         Dense(1)
@@ -116,30 +117,40 @@ def lstm_predict(data, days):
     model.compile(optimizer='adam', loss='mse')
     model.fit(X, y, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=0)
 
-    seq = scaled[-WINDOW_SIZE:].copy()
-    preds = []
+    last_seq = features_scaled[-WINDOW_SIZE:].copy()
+    predictions = []
 
-    for _ in range(days):
-        input_seq = np.expand_dims(seq, axis=0) 
-        p = model.predict(input_seq, verbose=0)[0, 0]
+    for _ in range(days_ahead):
+        input_seq = np.expand_dims(last_seq, axis=0)
+        pred_scaled = model.predict(input_seq, verbose=0)[0, 0]
 
-        inv = np.zeros((1, 3))
-        inv[0, 0] = p
-        temp = scaler.inverse_transform(inv)[0, 0]
-        preds.append(temp)
+        inv = np.zeros((1, features.shape[1]))
+        inv[0, 0] = pred_scaled
+        predicted_temp = scaler.inverse_transform(inv)[0, 0]
+        predictions.append(predicted_temp)
 
-        new_row = np.array([[p, seq[-1, 1], seq[-1, 2]]])
-        seq = np.vstack((seq[1:], new_row))
+        new_row = np.array([[pred_scaled, last_seq[-1, 1], last_seq[-1, 2]]])
+        last_seq = np.vstack((last_seq[1:], new_row))
 
-    return preds
+    rain = df.iloc[-1]["precipitation_sum"]
+    return predictions, rain
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "message": "Weather API شغال!",
+        "endpoint": "/api/weather (POST)",
+        "example": {"days": 7},
+        "status": "OK"
+    })
 
 @app.route("/api/weather", methods=["POST"])
 def weather():
     try:
         user_ip = get_user_ip()
         days = int(request.json.get("days", 7))
-        if days < 1 or days > 16:
-            return jsonify({"error": "عدد الأيام من 1 إلى 16"}), 400
+        if days < 1 or days > 15:
+            return jsonify({"error": "عدد الأيام من 1 إلى 15"}), 400
 
         loc = get_location(user_ip)
         if not loc:
@@ -149,8 +160,7 @@ def weather():
         end = start + timedelta(days=days)
         weather_data = fetch_weather(loc["lat"], loc["lon"], loc["timezone"], start.isoformat(), end.isoformat())
 
-        temps = lstm_predict(weather_data, days)
-        rain = pd.DataFrame(weather_data["daily"])["precipitation_sum"].iloc[-1]
+        temps, rain = lstm_predict(weather_data, days)
 
         results = []
         for i, temp in enumerate(temps, 1):
@@ -169,5 +179,4 @@ def weather():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-
     app.run(host="0.0.0.0", port=port, debug=False)
