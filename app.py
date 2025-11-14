@@ -4,6 +4,7 @@ import threading
 import time
 import requests
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # ← مهم جدًا!
 import numpy as np
 import pandas as pd
 from datetime import date, timedelta
@@ -12,10 +13,11 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Input
 
 app = Flask(__name__)
+CORS(app)  # ← يسمح للويب يتصل
 
 # ====================== إعدادات ======================
 WINDOW_SIZE = 10
-EPOCHS = 7          # شغال سريع ودقيق
+EPOCHS = 7
 BATCH_SIZE = 16
 
 # ====================== كشف الـ IP ======================
@@ -25,10 +27,7 @@ def is_private_ip(ip: str) -> bool:
     return bool(IPV4_PRIVATE.match(ip))
 
 def get_user_ip() -> str:
-    headers = [
-        "CF-Connecting-IP", "True-Client-IP", "X-Real-IP",
-        "X-Forwarded-For", "X-Client-IP", "Forwarded"
-    ]
+    headers = ["CF-Connecting-IP", "True-Client-IP", "X-Real-IP", "X-Forwarded-For", "X-Client-IP", "Forwarded"]
     for header in headers:
         value = request.headers.get(header)
         if value:
@@ -99,7 +98,7 @@ def keep_warm():
     while True:
         time.sleep(300)
         try:
-            requests.post("https://web-production-cdbe.up.railway.app/api/weather", json={"days": 1}, timeout=10)
+            requests.post("https://web-production-b2f0.up.railway.app/api/weather", json={"days": 1}, timeout=10)
         except:
             pass
 threading.Thread(target=keep_warm, daemon=True).start()
